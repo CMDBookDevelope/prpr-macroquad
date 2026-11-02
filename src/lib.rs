@@ -693,11 +693,17 @@ impl EventHandler for Stage {
 
             #[cfg(any(target_arch = "wasm32", target_os = "linux"))]
             {
-                let _z = telemetry::ZoneGuard::new("glFinish/glFLush");
-
-                unsafe {
-                    miniquad::gl::glFlush();
-                    miniquad::gl::glFinish();
+                // On Linux this was unconditional, but a Vulkan context never loads
+                // the GL function pointers, so `glFlush`/`glFinish` would panic.
+                // `end_frame` above already submits the Vulkan frame.
+                if get_quad_context().rendering_backend()
+                    == miniquad::conf::RenderingBackend::OpenGL
+                {
+                    let _z = telemetry::ZoneGuard::new("glFinish/glFLush");
+                    unsafe {
+                        miniquad::gl::glFlush();
+                        miniquad::gl::glFinish();
+                    }
                 }
             }
         }
