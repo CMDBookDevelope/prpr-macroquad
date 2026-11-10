@@ -436,6 +436,18 @@ static mut MAIN_FUTURE: Option<Pin<Box<dyn Future<Output = ()>>>> = None;
 
 struct Stage {}
 
+impl Drop for Stage {
+    fn drop(&mut self) {
+        // Offscreen renderers return to their host app. Release global state
+        // while miniquad's context is still alive, before another render starts.
+        unsafe {
+            MAIN_FUTURE.take();
+            CONTEXT.take();
+            QUAD_CONTEXT = std::ptr::null_mut();
+        }
+    }
+}
+
 impl EventHandler for Stage {
     fn resize_event(&mut self, ctx: &mut miniquad::Context, width: f32, height: f32) {
         set_quad_context(ctx);

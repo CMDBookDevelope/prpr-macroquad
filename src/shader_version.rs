@@ -10,7 +10,7 @@ pub enum ShaderVersion {
 
 impl ShaderVersion {
     pub fn detect(ctx: &Context) -> Self {
-        if ctx.rendering_backend() == miniquad::conf::RenderingBackend::Vulkan { return ShaderVersion::Vulkan; }
+        if matches!(ctx.rendering_backend(), miniquad::conf::RenderingBackend::Vulkan | miniquad::conf::RenderingBackend::Metal) { return ShaderVersion::Vulkan; }
 
         #[cfg(feature = "gl-40")]
         {

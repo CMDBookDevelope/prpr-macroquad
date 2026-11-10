@@ -19,6 +19,7 @@ default = ["audio"]
 gl-legacy = []
 gl-30 = []
 gl-40 = []
+metal = ["miniquad/metal"]
 
 [package.metadata.android]
 assets = "examples/"
@@ -47,6 +48,9 @@ macroquad-particles = { path = "./particles" }
 macroquad-tiled = { path = "./tiled" }
 macroquad-profiler = { path = "./profiler" }
 macroquad-platformer = { path = "./physics-platformer" }
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+miniquad = { git = "https://github.com/CMDBookDevelope/prpr-miniquad", features = ["metal"] }
 
 # workaround to fix the examples
 # this allows to use macroquad-particles in examples without two versions of macroquad
