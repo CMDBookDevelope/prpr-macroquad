@@ -75,6 +75,38 @@ pub fn simulate_mouse_with_touch(option: bool) {
     get_context().simulate_mouse_with_touch = option;
 }
 
+/// Feed a touch from an embedded native view on the graphics thread.
+/// The host must queue events from its UI thread and call this before update.
+pub fn inject_touch(touch: Touch) {
+    let phase = match touch.phase {
+        TouchPhase::Started => Some(miniquad::TouchPhase::Started),
+        TouchPhase::Moved => Some(miniquad::TouchPhase::Moved),
+        TouchPhase::Ended => Some(miniquad::TouchPhase::Ended),
+        TouchPhase::Cancelled => Some(miniquad::TouchPhase::Cancelled),
+        TouchPhase::Stationary => None,
+    };
+    let context = get_context();
+    if let Some(phase) = phase {
+        // Subscribers need every ordered event, including a tap whose start and
+        // release both arrive in one frame and coalesced motion for flicks.
+        for events in &mut context.input_events {
+            events.push(crate::MiniquadInputEvent::Touch {
+                phase, id: touch.id, x: touch.position.x, y: touch.position.y, time: touch.time,
+            });
+        }
+    }
+    context.touches.insert(touch.id, touch);
+}
+
+/// Release all contacts when an embedded view is suspended or dismissed.
+pub fn cancel_touches() {
+    let contacts: Vec<_> = get_context().touches.values().cloned().collect();
+    for mut touch in contacts {
+        touch.phase = TouchPhase::Cancelled;
+        inject_touch(touch);
+    }
+}
+
 /// Return touches with positions in pixels.
 pub fn touches() -> Vec<Touch> {
     get_context().touches.values().cloned().collect()
