@@ -817,6 +817,20 @@ impl QuadGl {
             }
 
             ctx.apply_pipeline(&pipeline.pipeline);
+            if matches!(dc.pipeline, GlPipeline(0..=3)) {
+                let hdr = dc.render_pass.is_some_and(|pass| pass.texture(ctx).format == TextureFormat::RGBA16F);
+                let color_blend = BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Value(BlendValue::SourceAlpha),
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                );
+                let alpha_blend = hdr.then(|| BlendState::new(
+                    Equation::Add,
+                    BlendFactor::One,
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                ));
+                ctx.set_blend(Some(color_blend), alpha_blend);
+            }
             if let Some((x, y, w, h)) = dc.viewport {
                 ctx.apply_viewport(x, y, w, h);
             } else {
