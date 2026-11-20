@@ -1,12 +1,19 @@
 use crate::{get_context, get_quad_context, time::get_time};
 
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap};
 
-static mut PROFILER: Option<Profiler> = None;
+thread_local! {
+    static PROFILER: RefCell<Profiler> = RefCell::new(Profiler::new());
+}
 
-fn get_profiler() -> &'static mut Profiler {
-    unsafe {
-        PROFILER.get_or_insert_with(|| Profiler {
+fn with_profiler<R>(f: impl FnOnce(&mut Profiler) -> R) -> R {
+    PROFILER.with(|profiler| f(&mut profiler.borrow_mut()))
+}
+
+impl Profiler {
+    fn new() -> Self {
+        Self {
+            backend: None,
             frame: Frame::new(),
             queries: HashMap::new(),
             active_query: None,
@@ -17,7 +24,7 @@ fn get_profiler() -> &'static mut Profiler {
             capture: false,
             drawcalls: vec![],
             strings: vec![],
-        })
+        }
     }
 }
 
@@ -65,76 +72,123 @@ impl Drop for ZoneGuard {
 }
 
 pub fn enable() {
-    get_profiler().enable_request = Some(true);
+    with_profiler(|profiler| profiler.enable_request = Some(true));
 }
 
 pub fn disable() {
-    get_profiler().enable_request = Some(false);
+    with_profiler(|profiler| profiler.enable_request = Some(false));
 }
 
 pub fn begin_zone(name: &str) {
-    if get_profiler().enabled {
-        get_profiler().begin_zone(name);
-    }
+    with_profiler(|profiler| {
+        if profiler.enabled {
+            profiler.begin_zone(name);
+        }
+    });
 }
 
 pub fn end_zone() {
-    if get_profiler().enabled {
-        get_profiler().end_zone();
-    }
+    with_profiler(|profiler| {
+        if profiler.enabled {
+            profiler.end_zone();
+        }
+    });
+}
+
+fn begin_gpu_query_if_supported(name: &str) -> bool {
+    with_profiler(|profiler| {
+        if !profiler.enabled || !profiler.gpu_timers_supported() {
+            return false;
+        }
+        profiler.begin_gpu_query(name);
+        true
+    })
 }
 
 pub fn begin_gpu_query(name: &str) {
-    get_profiler().begin_gpu_query(name);
+    begin_gpu_query_if_supported(name);
 }
 
 pub fn end_gpu_query() {
-    get_profiler().end_gpu_query();
+    with_profiler(|profiler| {
+        if profiler.gpu_timers_supported() {
+            profiler.end_gpu_query();
+        }
+    });
+}
+
+pub(crate) struct GpuQueryGuard(bool);
+
+impl GpuQueryGuard {
+    pub(crate) fn begin(name: &str) -> Self {
+        Self(begin_gpu_query_if_supported(name))
+    }
+}
+
+impl Drop for GpuQueryGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            end_gpu_query();
+        }
+    }
+}
+
+pub(crate) fn set_backend(backend: miniquad::conf::RenderingBackend) {
+    with_profiler(|profiler| {
+        if profiler.backend != Some(backend) {
+            profiler.active_query = None;
+            profiler.queries.clear();
+            profiler.backend = Some(backend);
+        }
+    });
+}
+
+pub(crate) fn reset_context() {
+    with_profiler(|profiler| *profiler = Profiler::new());
 }
 
 /// Workaround to stop gl capture on debug rendering
 #[doc(hidden)]
 pub fn pause_gl_capture() {
-    if get_profiler().capture {
+    if with_profiler(|profiler| profiler.capture) {
         crate::get_context().gl.capture(false);
     }
 }
 
 /// Workaround to stop gl capture on debug rendering
 pub fn resume_gl_capture() {
-    if get_profiler().capture {
+    if with_profiler(|profiler| profiler.capture) {
         crate::get_context().gl.capture(false);
     }
 }
 
 pub(crate) fn reset() {
-    let profiler = get_profiler();
+    with_profiler(|profiler| {
+        assert!(
+            profiler.frame.active_zone.is_null(),
+            "New frame started with unpaired begin/end zones."
+        );
 
-    assert!(
-        get_profiler().frame.active_zone.is_null(),
-        "New frame started with unpaired begin/end zones."
-    );
+        profiler.frame.full_frame_time = crate::time::get_frame_time();
+        std::mem::swap(&mut profiler.prev_frame, &mut profiler.frame);
+        profiler.frame = Frame::new();
 
-    profiler.frame.full_frame_time = crate::time::get_frame_time();
+        if let Some(enable) = profiler.enable_request.take() {
+            profiler.enabled = enable;
+        }
 
-    std::mem::swap(&mut profiler.prev_frame, &mut profiler.frame);
-    profiler.frame = Frame::new();
+        if profiler.capture {
+            profiler.capture = false;
+            crate::get_context().gl.capture(false);
+        }
 
-    if let Some(enable) = profiler.enable_request.take() {
-        profiler.enabled = enable;
-    }
-
-    if profiler.capture {
-        profiler.capture = false;
-        crate::get_context().gl.capture(false);
-    }
-
-    if profiler.capture_request {
-        profiler.drawcalls.clear();
-        profiler.capture = true;
-        crate::get_context().gl.capture(true);
-        profiler.capture_request = false;
-    }
+        if profiler.capture_request {
+            profiler.drawcalls.clear();
+            profiler.capture = true;
+            crate::get_context().gl.capture(true);
+            profiler.capture_request = false;
+        }
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -171,24 +225,29 @@ impl Frame {
 }
 
 pub fn frame() -> Frame {
-    get_profiler().prev_frame.clone()
+    with_profiler(|profiler| profiler.prev_frame.clone())
 }
 
 pub fn gpu_queries() -> Vec<(String, u64)> {
-    get_profiler()
-        .queries
-        .iter()
-        .map(|(name, query)| (name.to_owned(), query.value))
-        .collect()
+    with_profiler(|profiler| {
+        profiler
+            .queries
+            .iter()
+            .map(|(name, query)| (name.to_owned(), query.value))
+            .collect()
+    })
 }
 
 pub fn sample_gpu_queries() {
-    for query in &mut get_profiler().queries {
-        query.1.force_resume = true;
-    }
+    with_profiler(|profiler| {
+        for query in &mut profiler.queries {
+            query.1.force_resume = true;
+        }
+    });
 }
 
 struct Profiler {
+    backend: Option<miniquad::conf::RenderingBackend>,
     frame: Frame,
     prev_frame: Frame,
     queries: HashMap<String, GpuQuery>,
@@ -202,6 +261,11 @@ struct Profiler {
 }
 
 impl Profiler {
+    fn gpu_timers_supported(&self) -> bool {
+        self.backend == Some(miniquad::conf::RenderingBackend::OpenGL)
+            && miniquad::graphics::ElapsedQuery::is_supported()
+    }
+
     fn begin_gpu_query(&mut self, name: &str) {
         assert!(
             self.active_query.is_none(),
@@ -225,12 +289,11 @@ impl Profiler {
         }
     }
 
-    fn end_gpu_query(&mut self) {
-        let name = self
-            .active_query
-            .take()
-            .expect("End query without begin query");
-        let mut query = self.queries.get_mut(&name).unwrap();
+    fn end_gpu_query(&mut self) -> bool {
+        let Some(name) = self.active_query.take() else {
+            return false;
+        };
+        let query = self.queries.get_mut(&name).unwrap();
         if query.in_progress {
             query.force_resume = false;
             query.in_progress = false;
@@ -239,6 +302,7 @@ impl Profiler {
         if query.query.is_available() {
             query.value = query.query.get_result();
         }
+        true
     }
 
     fn begin_zone(&mut self, name: &str) {
@@ -318,15 +382,15 @@ impl<'a> Drop for LogTimeGuard<'a> {
 }
 
 pub fn log_string(string: &str) {
-    get_profiler().strings.push(string.to_owned());
+    with_profiler(|profiler| profiler.strings.push(string.to_owned()));
 }
 
 pub fn drawcalls() -> Vec<DrawCallTelemetry> {
-    get_profiler().drawcalls.clone()
+    with_profiler(|profiler| profiler.drawcalls.clone())
 }
 
 pub fn strings() -> Vec<String> {
-    get_profiler().strings.clone()
+    with_profiler(|profiler| profiler.strings.clone())
 }
 
 /// Note that coroutines pre-allocate 56Kb, so 56000 as a result doesnt mean a leak
@@ -339,7 +403,7 @@ pub fn active_coroutines_count() -> usize {
 }
 
 pub fn capture_frame() {
-    get_profiler().capture_request = true;
+    with_profiler(|profiler| profiler.capture_request = true);
 }
 
 #[derive(Clone, Debug)]
@@ -369,8 +433,10 @@ pub(crate) fn track_drawcall(
     get_quad_context().draw(0, indices_count as _, 1);
     get_quad_context().end_render_pass();
 
-    get_profiler().drawcalls.push(DrawCallTelemetry {
-        indices_count,
-        texture,
+    with_profiler(|profiler| {
+        profiler.drawcalls.push(DrawCallTelemetry {
+            indices_count,
+            texture,
+        });
     });
 }

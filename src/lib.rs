@@ -322,8 +322,6 @@ impl Context {
     }
 
     fn begin_frame(&mut self) {
-        telemetry::begin_gpu_query("GPU");
-
         self.ui_context.process_input();
 
         let color = Self::DEFAULT_BG_COLOR;
@@ -351,8 +349,6 @@ impl Context {
                 panic!("screenshot successfully saved to `screenshot.png`");
             }
         }
-
-        telemetry::end_gpu_query();
 
         self.mouse_wheel = Vec2::new(0., 0.);
         self.keys_pressed.clear();
@@ -440,6 +436,7 @@ impl Drop for Stage {
     fn drop(&mut self) {
         // Offscreen renderers return to their host app. Release global state
         // while miniquad's context is still alive, before another render starts.
+        telemetry::reset_context();
         unsafe {
             MAIN_FUTURE.take();
             CONTEXT.take();
@@ -654,6 +651,8 @@ impl EventHandler for Stage {
 
     fn draw(&mut self, ctx: &mut miniquad::Context) {
         set_quad_context(ctx);
+        telemetry::set_backend(ctx.rendering_backend());
+        let _gpu_query = telemetry::GpuQueryGuard::begin("GPU");
         {
             let _z = telemetry::ZoneGuard::new("Event::draw");
 
@@ -720,6 +719,7 @@ impl EventHandler for Stage {
             }
         }
 
+        drop(_gpu_query);
         telemetry::reset();
     }
 
