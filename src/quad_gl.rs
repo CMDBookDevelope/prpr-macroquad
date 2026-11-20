@@ -818,13 +818,18 @@ impl QuadGl {
 
             ctx.apply_pipeline(&pipeline.pipeline);
             if matches!(dc.pipeline, GlPipeline(0..=3)) {
-                let hdr = dc.render_pass.is_some_and(|pass| pass.texture(ctx).format == TextureFormat::RGBA16F);
+                // RGBA offscreen targets accumulate premultiplied RGB, but
+                // coverage must use source-over (As + Ad * (1 - As)), not As².
+                // Keep RGB8 and the default/window framebuffer behavior intact.
+                let rgba_target = dc.render_pass.is_some_and(|pass| {
+                    matches!(pass.texture(ctx).format, TextureFormat::RGBA8 | TextureFormat::RGBA16F)
+                });
                 let color_blend = BlendState::new(
                     Equation::Add,
                     BlendFactor::Value(BlendValue::SourceAlpha),
                     BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
                 );
-                let alpha_blend = hdr.then(|| BlendState::new(
+                let alpha_blend = rgba_target.then(|| BlendState::new(
                     Equation::Add,
                     BlendFactor::One,
                     BlendFactor::OneMinusValue(BlendValue::SourceAlpha),

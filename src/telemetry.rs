@@ -134,13 +134,7 @@ impl Drop for GpuQueryGuard {
 }
 
 pub(crate) fn set_backend(backend: miniquad::conf::RenderingBackend) {
-    with_profiler(|profiler| {
-        if profiler.backend != Some(backend) {
-            profiler.active_query = None;
-            profiler.queries.clear();
-            profiler.backend = Some(backend);
-        }
-    });
+    with_profiler(|profiler| profiler.backend = Some(backend));
 }
 
 pub(crate) fn reset_context() {
@@ -439,4 +433,52 @@ pub(crate) fn track_drawcall(
             texture,
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{begin_gpu_query_if_supported, enable, reset_context, set_backend, with_profiler};
+    use miniquad::conf::RenderingBackend;
+
+    #[test]
+    fn backend_initialization_preserves_preconfigured_enable_request() {
+        reset_context();
+        enable();
+        set_backend(RenderingBackend::OpenGL);
+        assert!(with_profiler(
+            |profiler| profiler.enable_request == Some(true)
+        ));
+        reset_context();
+    }
+
+    #[test]
+    fn unsupported_gpu_timers_are_not_registered_or_started() {
+        reset_context();
+        set_backend(RenderingBackend::OpenGL);
+        with_profiler(|profiler| profiler.enabled = true);
+        assert!(!begin_gpu_query_if_supported("GPU"));
+        assert!(with_profiler(|profiler| profiler.queries.is_empty()));
+        reset_context();
+    }
+
+    #[test]
+    fn context_reset_discards_active_query_state() {
+        reset_context();
+        with_profiler(|profiler| {
+            profiler.active_query = Some("GPU".to_owned());
+            profiler.queries.insert(
+                "GPU".to_owned(),
+                super::GpuQuery {
+                    query: miniquad::graphics::ElapsedQuery::new(),
+                    in_progress: false,
+                    value: 0,
+                    force_resume: false,
+                },
+            );
+        });
+        reset_context();
+        assert!(with_profiler(
+            |profiler| profiler.active_query.is_none() && profiler.queries.is_empty()
+        ));
+    }
 }
